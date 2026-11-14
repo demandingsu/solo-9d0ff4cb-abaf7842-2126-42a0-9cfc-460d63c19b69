@@ -209,6 +209,15 @@ class VersionEval:
     """针对某一版源字段清单评估全部产出列。
 
     other_sources 为对照版源清单，仅用于在原因里标注“本版移除”之类的对照信息。
+
+    实现分两个阶段，均为线性规模，备用组相互引用形成的环不会引发重复计算：
+
+    1) 定点阶段：所有产出列初始按 UNKNOWN 处理，三值 AND（组内全部可用）/
+       OR（组间任一可用）是单调算子，经工作列表按反向依赖传播到最小不动点。
+       无源支撑的循环上的列始终停在初始值 UNKNOWN，天然符合“待核实”口径。
+    2) 路径阶段：依据定点状态为每个列各构建一棵完整路径树；环上回边只生成一次
+       循环节点，同一棵树内重复出现的列改为紧凑引用（各列自身的根展开互不影响），
+       使相互引用（含环）图的报告体积随列数线性增长，并保留展开深度上限兜底。
     """
 
     def __init__(self, deps: DependencySet, sources: dict[str, set[str]],
@@ -216,9 +225,8 @@ class VersionEval:
         self.deps = deps
         self.sources = sources
         self.other_sources = other_sources or {}
-        self.memo: dict[tuple[str, str], dict] = {}
-        # 求值途中遇到循环时，栈上节点结果可能只是“途经值”，不做缓存
-        self.tainted: set[tuple[str, str]] = set()
+        # 定点阶段结果：列 -> 状态
+        self.statuses: dict[tuple[str, str], str] = {}
 
     # -- 引用解析 ---------------------------------------------------------
 
@@ -253,9 +261,60 @@ class VersionEval:
             return BROKEN, f"源字段缺失：{ref.raw} 在本版清单中已被移除（对照版存在）"
         return BROKEN, f"源字段缺失：{ref.raw} 不在本版源字段清单中"
 
-    # -- 求值 -------------------------------------------------------------
+    # -- 阶段一：三值定点 -------------------------------------------------
 
-    def eval_ref(self, ref: Ref, stack: list[tuple[str, str]], depth: int) -> dict:
+    def _ref_status(self, ref: Ref) -> tuple[str, str]:
+        """单个输入引用的 (状态, 说明)；列引用按当前定点值取值。"""
+        kind, problem = self._classify(ref)
+        if kind == "missing":
+            return UNKNOWN, problem
+        if kind == "source":
+            return self._source_status(ref)
+        return self.statuses[(ref.owner, ref.name)], f"上游列 {ref.raw}"
+
+    def _column_status_now(self, key: tuple[str, str]) -> str:
+        """按当前定点值重算一个列的状态（组内 AND、组间 OR）。"""
+        spec = self.deps.outputs[key]
+        group_states = []
+        for group in spec.groups:
+            group_states.append(_and_status([self._ref_status(r)[0] for r in group]))
+        return _or_status(group_states)
+
+    def solve_fixed_point(self) -> None:
+        """工作列表求最小不动点：状态只按 UNKNOWN -> OK/BROKEN 单向推进。
+
+        每个列最多变化一次（扁平三值格高度为 2），整体 O(列数 + 引用数)。
+        """
+        # 反向依赖：被引用列 -> 消费它的列
+        dependents: dict[tuple[str, str], list[tuple[str, str]]] = {
+            key: [] for key in self.deps.outputs
+        }
+        for key, spec in self.deps.outputs.items():
+            for group in spec.groups:
+                for ref in group:
+                    child = (ref.owner, ref.name)
+                    if child in dependents:
+                        dependents[child].append(key)
+        # 初始一律 UNKNOWN：无源支撑的循环最终停在此值，即“待核实”
+        self.statuses = {key: UNKNOWN for key in self.deps.outputs}
+        worklist = list(self.deps.outputs)
+        queued = set(worklist)
+        while worklist:
+            key = worklist.pop()
+            queued.discard(key)
+            new_status = self._column_status_now(key)
+            if new_status == self.statuses[key]:
+                continue
+            self.statuses[key] = new_status
+            for parent in dependents[key]:
+                if parent not in queued:
+                    queued.add(parent)
+                    worklist.append(parent)
+
+    # -- 阶段二：依赖路径树 ----------------------------------------------
+
+    def _input_node(self, ref: Ref, stack: list[tuple[str, str]],
+                    seen: set[tuple[str, str]], depth: int) -> dict[str, Any]:
         kind, problem = self._classify(ref)
         node: dict[str, Any] = {"ref": ref.raw, "kind": kind}
         if kind == "missing":
@@ -266,47 +325,65 @@ class VersionEval:
             node.update(status=status, reason=reason)
             return node
         # 上游列引用
-        child = self._eval_column((ref.owner, ref.name), stack, depth + 1)
-        node["status"] = child["status"]
-        node["reason"] = f"上游列 {ref.raw}：{STATUS_LABEL[child['status']]}"
-        if depth < MAX_TRACE_DEPTH and child.get("groups") is not None:
+        child_key = (ref.owner, ref.name)
+        child_status = self.statuses[child_key]
+        node["status"] = child_status
+        node["reason"] = f"上游列 {ref.raw}：{STATUS_LABEL[child_status]}"
+        if child_key in stack:
+            # 环上回边优先于展开记账：必须显式标注循环链路，不能被紧凑引用掩盖
+            idx = stack.index(child_key)
+            path = " -> ".join(f"{j}.{c}" for j, c in stack[idx:] + [child_key])
+            reason = f"循环依赖且无源支撑：{path}"
             node["child"] = {"job": ref.owner, "column": ref.name,
-                             "status": child["status"], "reason": child["reason"],
-                             "groups": child["groups"]}
-        elif child.get("groups") is None:
-            node["reason"] = child["reason"]  # 循环等无展开情形，透传原因
-        else:
+                             "status": UNKNOWN, "reason": reason, "groups": None}
+            return node
+        if depth >= MAX_TRACE_DEPTH:
             node["truncated"] = True
+            return node
+        if child_key in seen:
+            # 同一根路径树内该列已完整内联过：此处只保留状态与紧凑引用，不再重复挂子树，
+            # 使相互引用（含环）图的单棵路径树随列数线性增长；其它列的根展开不受影响。
+            node["child"] = {"job": ref.owner, "column": ref.name,
+                             "status": child_status,
+                             "reason": f"上游列 {ref.raw}：{STATUS_LABEL[child_status]}"
+                                       f"（完整路径见该列自身的展开）",
+                             "groups": [], "reference": True}
+            return node
+        node["child"] = self._trace_column(child_key, stack, seen, depth + 1)
         return node
 
-    def _eval_column(self, key: tuple[str, str], stack: list[tuple[str, str]], depth: int) -> dict:
-        if key in self.memo:
-            return self.memo[key]
-        if key in stack:
-            idx = stack.index(key)
-            self.tainted.update(stack[idx:])
-            path = " -> ".join(f"{j}.{c}" for j, c in stack[idx:] + [key])
-            return {"status": UNKNOWN, "reason": f"循环依赖且无源支撑：{path}", "groups": None}
-        if depth > MAX_EVAL_DEPTH:
-            return {"status": UNKNOWN, "reason": "依赖层级过深，无法完全展开", "groups": None}
+    def _group_result(self, index: int, group: list[Ref],
+                      stack: list[tuple[str, str]],
+                      seen: set[tuple[str, str]], depth: int) -> dict[str, Any]:
+        inputs = [self._input_node(r, stack, seen, depth) for r in group]
+        gstatus = _and_status([it["status"] for it in inputs])
+        bad = [it["ref"] for it in inputs if it["status"] == BROKEN]
+        unk = [it["ref"] for it in inputs if it["status"] == UNKNOWN]
+        if gstatus == OK:
+            greason = "组内全部输入可用"
+        elif gstatus == BROKEN:
+            greason = "输入不可用：" + "、".join(bad)
+        else:
+            greason = "存在待核实输入：" + "、".join(unk)
+        return {"index": index, "status": gstatus, "reason": greason, "inputs": inputs}
+
+    def _trace_column(self, key: tuple[str, str],
+                      stack: list[tuple[str, str]],
+                      seen: set[tuple[str, str]], depth: int) -> dict[str, Any]:
+        # seen 是“本次根遍历内已完整内联过的列”：环回边由 stack 精确识别，
+        # 重复子树由 seen 收敛为紧凑引用，单棵路径树的节点数随列数线性增长。
         spec = self.deps.outputs[key]
+        if depth > MAX_EVAL_DEPTH:
+            return {"job": key[0], "column": key[1], "status": UNKNOWN,
+                    "reason": "依赖层级过深，无法完全展开", "groups": None}
+        seen.add(key)
         stack.append(key)
-        group_results = []
-        for i, group in enumerate(spec.groups, 1):
-            inputs = [self.eval_ref(r, stack, depth) for r in group]
-            gstatus = _and_status([it["status"] for it in inputs])
-            bad = [it["ref"] for it in inputs if it["status"] == BROKEN]
-            unk = [it["ref"] for it in inputs if it["status"] == UNKNOWN]
-            if gstatus == OK:
-                greason = "组内全部输入可用"
-            elif gstatus == BROKEN:
-                greason = "输入不可用：" + "、".join(bad)
-            else:
-                greason = "存在待核实输入：" + "、".join(unk)
-            group_results.append({"index": i, "status": gstatus, "reason": greason,
-                                  "inputs": inputs})
-        stack.pop()
-        status = _or_status([g["status"] for g in group_results])
+        try:
+            group_results = [self._group_result(i, g, stack, seen, depth)
+                             for i, g in enumerate(spec.groups, 1)]
+        finally:
+            stack.pop()
+        status = self.statuses[key]
         ok_groups = [g["index"] for g in group_results if g["status"] == OK]
         if status == OK:
             reason = f"存在完整可用组（第 {'、'.join(map(str, ok_groups))} 组）"
@@ -316,13 +393,15 @@ class VersionEval:
             reason = "所有输入组均不可用"
         else:
             reason = "无完整可用组，仅能依靠缺失引用或无源支撑的循环产出"
-        result = {"status": status, "reason": reason, "groups": group_results}
-        if key not in self.tainted:
-            self.memo[key] = result
-        return result
+        return {"job": key[0], "column": key[1],
+                "status": status, "reason": reason, "groups": group_results}
 
     def evaluate_all(self) -> dict[tuple[str, str], dict]:
-        return {key: self._eval_column(key, [], 0) for key in self.deps.outputs}
+        self.solve_fixed_point()
+        # 每个列的根遍历使用独立的 seen：各列自身路径始终完整展开，
+        # 仅在同一棵树内对重复出现的列做紧凑引用，整体报告体积随列数线性增长。
+        return {key: self._trace_column(key, [], set(), 0)
+                for key in self.deps.outputs}
 
 
 # ---------------------------------------------------------------------------

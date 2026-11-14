@@ -55,6 +55,7 @@
   .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px;
          background: #eef2f6; color: var(--muted); margin-left: 6px; }
   .tag.ext { background: #e3eefb; color: var(--accent); }
+  .tag.ref { background: #f3e8fd; color: #7a3fb0; }
   .chg { color: var(--accent); font-size: 12px; white-space: nowrap; }
   .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
   .expander { cursor: pointer; color: var(--accent); user-select: none; white-space: nowrap; }
@@ -230,9 +231,10 @@ function inputHtml(inp) {
           `<span class="kind">${kindTxt}</span><span class="mono">${esc(inp.ref)}</span>` +
           `<span class="reason">${esc(inp.reason || "")}${inp.truncated ? "（路径过长已截断）" : ""}</span>`;
   if (inp.child) {
+    const refTag = inp.child.reference ? '<span class="tag ref">紧凑引用</span>' : "";
     h += `<div class="child"><div class="reason">└ ${esc(inp.child.job)}.${esc(inp.child.column)}：` +
-         `${LABEL[inp.child.status]} — ${esc(inp.child.reason)}</div>` +
-         inp.child.groups.map(groupHtml).join("") + `</div>`;
+         `${LABEL[inp.child.status]} — ${esc(inp.child.reason)} ${refTag}</div>` +
+         (inp.child.groups || []).map(groupHtml).join("") + `</div>`;
   }
   return h + `</div>`;
 }

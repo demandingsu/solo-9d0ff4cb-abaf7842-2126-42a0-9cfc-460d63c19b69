@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from .evaluator import FormatError, build_report, parse_dependencies, parse_sources
 from .store import SnapshotStore
@@ -58,10 +59,15 @@ async def create_snapshot(
     dependencies: UploadFile = File(..., description="跨作业字段依赖 JSON"),
     name: str = Form(""),
 ):
-    """上传三份清单并核查。成功则整版替换现役版本；失败保留旧版并留痕。"""
+    """上传三份清单并核查。成功则整版替换现役版本；失败保留旧版并留痕。
+
+    解析与评估是 CPU 密集型操作，放到线程池中执行，避免长时间占用事件循环，
+    保证核查进行期间 GET 旧版报告等并发请求仍能即时响应。
+    """
     snap_name = name.strip() or f"核查-{dependencies.filename or '未命名'}"
     try:
-        payload = build_payload(
+        payload = await run_in_threadpool(
+            build_payload,
             snap_name,
             await _read_json(sources_before, "变更前源字段清单"),
             await _read_json(sources_after, "变更后源字段清单"),
