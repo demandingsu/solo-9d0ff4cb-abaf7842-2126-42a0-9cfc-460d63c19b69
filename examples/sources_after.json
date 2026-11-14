@@ -1,0 +1,16 @@
+{
+  "version": "2026-11-15",
+  "comment": "变更后：raw_air_station_hourly 下线 co/pressure/wind_speed 字段；raw_meteo_daily 下线 visibility 字段",
+  "tables": {
+    "raw_air_station_hourly": [
+      "station_id", "ts", "pm25", "pm10", "so2", "no2", "o3",
+      "temp", "humidity"
+    ],
+    "raw_meteo_daily": [
+      "station_id", "ts", "rainfall", "wind_speed"
+    ],
+    "dim_station": [
+      "station_id", "station_name", "city", "region"
+    ]
+  }
+}

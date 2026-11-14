@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>环境监测数仓 · 字段变更核查</title>
+<style>
+  :root {
+    --ok: #1a7f37; --ok-bg: #e6f4ea;
+    --broken: #c0392b; --broken-bg: #fdecea;
+    --unknown: #b26a00; --unknown-bg: #fff4e0;
+    --line: #d8dee4; --ink: #1f2328; --muted: #656d76;
+    --card: #ffffff; --bg: #f4f6f9; --accent: #0b5cad;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+         background: var(--bg); color: var(--ink); }
+  header { background: #0d2c4f; color: #fff; padding: 14px 24px; display: flex;
+           align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .ver { font-size: 13px; opacity: .85; }
+  main { max-width: 1180px; margin: 20px auto; padding: 0 16px 60px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .field label { color: var(--muted); }
+  input[type=file], input[type=text] { font-size: 13px; padding: 6px; border: 1px solid var(--line);
+          border-radius: 6px; background: #fff; min-width: 220px; }
+  button { font-size: 13px; padding: 8px 16px; border: 0; border-radius: 6px; cursor: pointer;
+           background: var(--accent); color: #fff; }
+  button.ghost { background: #eef2f6; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: wait; }
+  .banner { display: none; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-top: 10px; }
+  .banner.err { display: block; background: var(--broken-bg); color: var(--broken); border: 1px solid #f5c6c0; }
+  .banner.ok  { display: block; background: var(--ok-bg); color: var(--ok); border: 1px solid #b7dfc2; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stat .n { font-size: 24px; font-weight: 700; }
+  .stat .t { font-size: 12px; color: var(--muted); }
+  .stat.broken .n { color: var(--broken); } .stat.unknown .n { color: var(--unknown); }
+  .stat.ok .n { color: var(--ok); } .stat.changed .n { color: var(--accent); }
+  .filters { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .filters label { display: flex; gap: 5px; align-items: center; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; background: #fafbfc; position: sticky; top: 0; }
+  tr.alert td { background: #fff8f7; }
+  tr.warn  td { background: #fffdf5; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.broken { background: var(--broken-bg); color: var(--broken); }
+  .badge.unknown { background: var(--unknown-bg); color: var(--unknown); }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px;
+         background: #eef2f6; color: var(--muted); margin-left: 6px; }
+  .tag.ext { background: #e3eefb; color: var(--accent); }
+  .chg { color: var(--accent); font-size: 12px; white-space: nowrap; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .expander { cursor: pointer; color: var(--accent); user-select: none; white-space: nowrap; }
+  .trace { display: none; padding: 10px 14px; background: #fafbfc; border-left: 3px solid var(--line);
+           margin: 6px 0 4px; border-radius: 0 6px 6px 0; }
+  .trace.open { display: block; }
+  .vercmp { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .vercmp h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+  .group { border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; margin: 6px 0; background: #fff; }
+  .group .ghead { font-size: 12.5px; margin-bottom: 4px; }
+  .group.g-ok { border-left: 4px solid var(--ok); }
+  .group.g-broken { border-left: 4px solid var(--broken); }
+  .group.g-unknown { border-left: 4px solid var(--unknown); }
+  .inp { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; font-size: 12.5px; flex-wrap: wrap; }
+  .inp .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transform: translateY(1px); }
+  .dot.ok { background: var(--ok); } .dot.broken { background: var(--broken); } .dot.unknown { background: var(--unknown); }
+  .kind { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .reason { color: var(--muted); font-size: 12px; }
+  .child { margin: 4px 0 4px 18px; padding-left: 10px; border-left: 2px dashed var(--line); }
+  .hist { font-size: 12.5px; color: var(--muted); }
+  .hist table td, .hist table th { padding: 5px 8px; }
+  .empty { color: var(--muted); font-size: 13.5px; padding: 18px; text-align: center; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.7; }
+  code { background: #eef2f6; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>环境监测数仓 · 原始站点表字段变更核查</h1>
+  <span class="ver" id="verInfo">正在读取现役版本…</span>
+</header>
+<main>
+  <div class="card">
+    <h2>上传核查（变更前后源字段清单 + 跨作业字段依赖）</h2>
+    <div class="row">
+      <div class="field"><label>变更前源字段清单 JSON</label><input type="file" id="fBefore" accept=".json,application/json"></div>
+      <div class="field"><label>变更后源字段清单 JSON</label><input type="file" id="fAfter" accept=".json,application/json"></div>
+      <div class="field"><label>跨作业字段依赖 JSON</label><input type="file" id="fDeps" accept=".json,application/json"></div>
+      <div class="field"><label>版本名称（可选）</label><input type="text" id="fName" placeholder="如：2026-11 站点表调整"></div>
+      <button id="btnUpload">开始核查并发布</button>
+      <button class="ghost" id="btnExample">载入内置示例核查</button>
+    </div>
+    <div class="banner" id="banner"></div>
+    <div class="hint">
+      判定口径：每个产出列可有多组输入，<b>组内全部可用该组才可用，任一组可用即可产出</b>；
+      有完整备用组时仍为「正常」；所有组确定不可用为「断供」；
+      仅能依靠缺失引用或无源支撑的循环产出时为「待核实」。
+      核查期间旧版照常可查；核查成功整版替换，失败自动保留旧版，查询绝不混用两版。
+      示例文件可下载后修改再上传：
+      <a href="/examples/sources_before.json">变更前</a> ·
+      <a href="/examples/sources_after.json">变更后</a> ·
+      <a href="/examples/dependencies.json">依赖</a>
+    </div>
+  </div>
+
+  <div class="card" id="summaryCard" style="display:none">
+    <h2>核查结论（新版源清单口径）</h2>
+    <div class="summary" id="summary"></div>
+  </div>
+
+  <div class="card" id="tableCard" style="display:none">
+    <h2>产出列对照（变更前 → 变更后）</h2>
+    <div class="filters">
+      <label><input type="checkbox" id="ckFinal" checked> 仅看最终/对外列</label>
+      <label><input type="checkbox" id="ckRisk"> 仅看断供/待核实/有变化</label>
+      <label>状态
+        <select id="selStatus">
+          <option value="">全部</option><option value="ok">正常</option>
+          <option value="broken">断供</option><option value="unknown">待核实</option>
+        </select></label>
+      <label>搜索 <input type="text" id="txtSearch" placeholder="作业或列名" style="min-width:140px"></label>
+      <span class="reason" id="rowCount"></span>
+    </div>
+    <div style="overflow:auto; max-height: 70vh; margin-top:10px">
+      <table>
+        <thead><tr>
+          <th style="width:34%">产出列</th><th>变更前</th><th>变更后</th><th>变化</th><th style="width:26%">判定说明（新版）</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card hist">
+    <h2>版本历史（最近 20 条）</h2>
+    <div id="history"><div class="empty">暂无记录</div></div>
+  </div>
+</main>
+
+<script>
+const LABEL = {ok: "正常", broken: "断供", unknown: "待核实"};
+let CURRENT = null;   // 现役版本数据
+let traceSeq = 0;
+
+function badge(s) { return `<span class="badge ${s}">${LABEL[s]}</span>`; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { msg = (await r.json()).detail || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+function showBanner(kind, msg) {
+  const b = document.getElementById("banner");
+  b.className = "banner " + kind; b.textContent = msg;
+}
+
+async function upload(files) {
+  const fd = new FormData();
+  fd.append("sources_before", files[0]);
+  fd.append("sources_after", files[1]);
+  fd.append("dependencies", files[2]);
+  const name = document.getElementById("fName").value.trim();
+  fd.append("name", name);
+  const btn = document.getElementById("btnUpload");
+  btn.disabled = true; btn.textContent = "核查中…（旧版仍可查询）";
+  try {
+    const res = await api("/api/snapshots", {method: "POST", body: fd});
+    const s = res.summary;
+    showBanner("ok", `核查成功，已整版发布为第 ${res.id} 版「${res.name}」：` +
+      `正常 ${s.after.ok} / 断供 ${s.after.broken} / 待核实 ${s.after.unknown}，状态变化 ${s.changed} 列。`);
+    await loadAll();
+  } catch (e) {
+    showBanner("err", "核查失败，旧版已保留：" + e.message);
+    await loadHistory();
+  } finally {
+    btn.disabled = false; btn.textContent = "开始核查并发布";
+  }
+}
+
+document.getElementById("btnUpload").onclick = () => {
+  const ids = ["fBefore", "fAfter", "fDeps"];
+  const files = ids.map(id => document.getElementById(id).files[0]);
+  if (files.some(f => !f)) { showBanner("err", "请选齐三份 JSON 文件（变更前 / 变更后 / 依赖）。"); return; }
+  upload(files);
+};
+
+document.getElementById("btnExample").onclick = async () => {
+  try {
+    const names = ["sources_before.json", "sources_after.json", "dependencies.json"];
+    const files = await Promise.all(names.map(async n => {
+      const r = await fetch("/examples/" + n);
+      if (!r.ok) throw new Error("示例文件未部署：" + n);
+      return new File([await r.blob()], n, {type: "application/json"});
+    }));
+    if (!document.getElementById("fName").value.trim())
+      document.getElementById("fName").value = "内置示例核查";
+    await upload(files);
+  } catch (e) { showBanner("err", e.message); }
+};
+
+// ---------- 渲染 ----------
+
+function renderSummary(s) {
+  const el = document.getElementById("summary");
+  el.innerHTML = `
+    <div class="stat"><div class="n">${s.total}</div><div class="t">产出列总数（最终/对外 ${s.final_total}）</div></div>
+    <div class="stat ok"><div class="n">${s.after.ok}</div><div class="t">正常（旧版 ${s.before.ok}）</div></div>
+    <div class="stat broken"><div class="n">${s.after.broken}</div><div class="t">断供（旧版 ${s.before.broken}）· 最终列 ${s.final_broken_after}</div></div>
+    <div class="stat unknown"><div class="n">${s.after.unknown}</div><div class="t">待核实（旧版 ${s.before.unknown}）· 最终列 ${s.final_unknown_after}</div></div>
+    <div class="stat changed"><div class="n">${s.changed}</div><div class="t">两版状态有变化</div></div>`;
+  document.getElementById("summaryCard").style.display = "block";
+}
+
+function inputHtml(inp) {
+  const kindTxt = {source: "源字段", column: "上游列", missing: "缺失引用"}[inp.kind] || inp.kind;
+  let h = `<div class="inp"><span class="dot ${inp.status}"></span>` +
+          `<span class="kind">${kindTxt}</span><span class="mono">${esc(inp.ref)}</span>` +
+          `<span class="reason">${esc(inp.reason || "")}${inp.truncated ? "（路径过长已截断）" : ""}</span>`;
+  if (inp.child) {
+    h += `<div class="child"><div class="reason">└ ${esc(inp.child.job)}.${esc(inp.child.column)}：` +
+         `${LABEL[inp.child.status]} — ${esc(inp.child.reason)}</div>` +
+         inp.child.groups.map(groupHtml).join("") + `</div>`;
+  }
+  return h + `</div>`;
+}
+
+function groupHtml(g) {
+  return `<div class="group g-${g.status}"><div class="ghead">第 ${g.index} 组输入 — ` +
+         `<span class="badge ${g.status}">${LABEL[g.status]}</span> ` +
+         `<span class="reason">${esc(g.reason)}</span></div>` +
+         g.inputs.map(inputHtml).join("") + `</div>`;
+}
+
+function versionTraceHtml(v, title) {
+  return `<div><h4>${title}：${badge(v.status)} <span class="reason">${esc(v.reason)}</span></h4>` +
+         (v.groups || []).map(groupHtml).join("") + `</div>`;
+}
+
+function renderTable() {
+  const onlyFinal = document.getElementById("ckFinal").checked;
+  const onlyRisk = document.getElementById("ckRisk").checked;
+  const st = document.getElementById("selStatus").value;
+  const q = document.getElementById("txtSearch").value.trim().toLowerCase();
+  const cols = CURRENT.payload.report.columns;
+  const tb = document.getElementById("tbody");
+  tb.innerHTML = "";
+  let shown = 0;
+  for (const c of cols) {
+    if (onlyFinal && !(c.is_final || c.is_external)) continue;
+    if (onlyRisk && !(c.after.status !== "ok" || c.changed)) continue;
+    if (st && c.after.status !== st) continue;
+    if (q && !c.name.toLowerCase().includes(q)) continue;
+    shown++;
+    const tid = "tr" + (++traceSeq);
+    const rowCls = c.after.status === "broken" ? "alert" : (c.after.status === "unknown" ? "warn" : "");
+    const tags = (c.is_final ? '<span class="tag">最终列</span>' : "") +
+                 (c.is_external ? '<span class="tag ext">对外</span>' : "");
+    const chg = c.changed ? `<span class="chg">${LABEL[c.before.status]} → ${LABEL[c.after.status]}</span>` : "";
+    const tr = document.createElement("tr");
+    tr.className = rowCls;
+    tr.innerHTML =
+      `<td><span class="expander" data-t="${tid}">▸ 展开路径</span> <span class="mono">${esc(c.name)}</span>${tags}</td>` +
+      `<td>${badge(c.before.status)}</td><td>${badge(c.after.status)}</td><td>${chg}</td>` +
+      `<td class="reason">${esc(c.after.reason)}</td>`;
+    const tr2 = document.createElement("tr");
+    tr2.innerHTML = `<td colspan="5" style="padding-top:0;border-bottom:2px solid var(--line)">` +
+      `<div class="trace" id="${tid}"><div class="vercmp">` +
+      versionTraceHtml(c.before, "变更前") + versionTraceHtml(c.after, "变更后") +
+      `</div></div></td>`;
+    tb.appendChild(tr); tb.appendChild(tr2);
+  }
+  document.getElementById("rowCount").textContent = `显示 ${shown} / ${cols.length} 列`;
+  document.getElementById("tableCard").style.display = "block";
+}
+
+document.getElementById("tbody").addEventListener("click", e => {
+  const t = e.target.closest(".expander");
+  if (!t) return;
+  const el = document.getElementById(t.dataset.t);
+  el.classList.toggle("open");
+  t.textContent = el.classList.contains("open") ? "▾ 收起路径" : "▸ 展开路径";
+});
+["ckFinal", "ckRisk", "selStatus", "txtSearch"].forEach(id =>
+  document.getElementById(id).addEventListener("input", renderTable));
+
+async function loadCurrent() {
+  try {
+    CURRENT = await api("/api/snapshots/current");
+  } catch (e) {
+    CURRENT = null;
+    document.getElementById("verInfo").textContent = "暂无现役版本，请上传核查";
+    document.getElementById("summaryCard").style.display = "none";
+    document.getElementById("tableCard").style.display = "none";
+    return;
+  }
+  document.getElementById("verInfo").textContent =
+    `现役版本 #${CURRENT.id}「${CURRENT.name}」 · 发布于 ${CURRENT.created_at}`;
+  renderSummary(CURRENT.payload.report.summary);
+  renderTable();
+}
+
+async function loadHistory() {
+  const {items} = await api("/api/snapshots");
+  const el = document.getElementById("history");
+  if (!items.length) { el.innerHTML = '<div class="empty">暂无记录</div>'; return; }
+  const stateTxt = {active: "✅ 现役", archived: "已归档", failed: "❌ 失败（未影响现役版）"};
+  el.innerHTML = `<table><thead><tr><th>ID</th><th>名称</th><th>时间</th><th>状态</th><th>说明</th></tr></thead><tbody>` +
+    items.map(i => `<tr><td>${i.id}</td><td>${esc(i.name)}</td><td>${esc(i.created_at)}</td>` +
+      `<td>${stateTxt[i.state] || i.state}</td><td>${esc(i.error || "")}</td></tr>`).join("") +
+    `</tbody></table>`;
+}
+
+async function loadAll() { await Promise.all([loadCurrent(), loadHistory()]); }
+loadAll();
+</script>
+</body>
+</html>

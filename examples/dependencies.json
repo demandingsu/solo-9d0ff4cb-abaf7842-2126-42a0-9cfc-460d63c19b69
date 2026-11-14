@@ -1,0 +1,61 @@
+{
+  "comment": "跨作业字段依赖：每个产出列 = 多组输入；组内全部可用才可用，任一组可用即可产出",
+  "jobs": [
+    {
+      "name": "job_air_quality_hourly",
+      "outputs": {
+        "pm25_avg": [["raw_air_station_hourly.pm25"]],
+        "co_avg": [["raw_air_station_hourly.co"]],
+        "wind_speed_avg": [
+          ["raw_air_station_hourly.wind_speed"],
+          ["job_meteo_clean.wind_speed"]
+        ],
+        "station_key": [["dim_station.station_id"]]
+      }
+    },
+    {
+      "name": "job_meteo_clean",
+      "outputs": {
+        "wind_speed": [["raw_meteo_daily.wind_speed"]],
+        "visibility_avg": [["raw_meteo_daily.visibility"]]
+      }
+    },
+    {
+      "name": "job_ghost_ref",
+      "outputs": {
+        "aqi_extra": [["legacy_job.aqi_raw"]]
+      }
+    },
+    {
+      "name": "job_cycle_a",
+      "outputs": {
+        "x": [["job_cycle_b.x"]]
+      }
+    },
+    {
+      "name": "job_cycle_b",
+      "outputs": {
+        "x": [["job_cycle_a.x"]]
+      }
+    },
+    {
+      "name": "job_daily_report",
+      "outputs": {
+        "report_pm25": [["job_air_quality_hourly.pm25_avg", "dim_station.station_id"]],
+        "report_co": [["job_air_quality_hourly.co_avg"]],
+        "report_wind": [["job_air_quality_hourly.wind_speed_avg"]],
+        "report_visibility": [["job_meteo_clean.visibility_avg"]],
+        "report_aqi_extra": [["job_ghost_ref.aqi_extra"]],
+        "station_name": [["dim_station.station_name"]]
+      }
+    }
+  ],
+  "external": [
+    "job_daily_report.report_pm25",
+    "job_daily_report.report_co",
+    "job_daily_report.report_wind",
+    "job_daily_report.report_visibility",
+    "job_daily_report.report_aqi_extra",
+    "job_daily_report.station_name"
+  ]
+}

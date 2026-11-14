@@ -1,0 +1,16 @@
+{
+  "version": "2026-11-01",
+  "comment": "变更前：原始站点表字段清单",
+  "tables": {
+    "raw_air_station_hourly": [
+      "station_id", "ts", "pm25", "pm10", "so2", "no2", "co", "o3",
+      "temp", "humidity", "wind_speed", "pressure"
+    ],
+    "raw_meteo_daily": [
+      "station_id", "ts", "rainfall", "visibility", "wind_speed"
+    ],
+    "dim_station": [
+      "station_id", "station_name", "city", "region"
+    ]
+  }
+}
